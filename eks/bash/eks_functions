@@ -1,0 +1,274 @@
+#! /bin/bash
+
+########################################################################
+# Library of functions to make it easy to program EKS stuff in bash
+###################################################################
+
+
+function ensure_stack_exists
+{
+    local REGION=$1
+    local STACK_NAME=$2
+    echo "------------------------------------------------------------------------"
+    echo "Stack Info"
+    STACK_INFO=`aws cloudformation list-stacks | jq -r ".StackSummaries[] | select(.StackStatus == \"CREATE_COMPLETE\" and .StackName == \"${STACK_NAME}\")"`
+    if [ "$STACK_INFO" == "" ]; then
+        # The cluster hasn't been fully created
+        STACK_IN_PROGRESS=`aws cloudformation list-stacks | jq -r ".StackSummaries[] | select(.StackStatus == \"CREATE_IN_PROGRESS\" and .StackName == \"${STACK_NAME}\")"`
+        if [ "$STACK_IN_PROGRESS" == "" ]; then
+            # The cluster isn't being built, so send the creation command
+            aws cloudformation create-stack \
+              --region "${REGION}" \
+              --stack-name "${STACK_NAME}" \
+              --template-url https://s3.us-west-2.amazonaws.com/amazon-eks/cloudformation/2020-10-29/amazon-eks-vpc-private-subnets.yaml
+            if [ "$?" != "0" ]; then
+                # If the command failed, exit
+                exit $?
+            fi
+        fi
+    fi
+    STACK_INFO=`aws cloudformation list-stacks | jq -r ".StackSummaries[] | select(.StackStatus == \"CREATE_COMPLETE\" and .StackName == \"${STACK_NAME}\")"`
+    local I=0
+    while [ "$STACK_INFO" == "" ] && [ "$I" != "60" ]; do
+        # Wait for up to an hour for the cluster to be created, polling every minute
+        echo -n "."
+        # Sleep for a minute to 
+        sleep 60
+        I=$(($I + 1))
+        STACK_INFO=`aws cloudformation list-stacks | jq -r ".StackSummaries[] | select(.StackStatus == \"CREATE_COMPLETE\" and .StackName == \"${STACK_NAME}\")"`
+    done
+    if [ "$I" != "0" ]; then
+        echo
+    fi
+    if [ "$STACK_INFO" == "" ]; then
+        exit 1
+    fi
+    echo "------------------------------------------------------------------------"
+    echo $STACK_INFO | jq .
+    echo "------------------------------------------------------------------------"
+    return 0
+}
+
+
+function ensure_role_is_configured
+{
+    local CLUSTER_ROLE_NAME=$1
+    local CLUSTER_ROLE_POLICY_FILENAME=$2
+
+    echo "------------------------------------------------------------------------"
+    echo "Role Info"
+    ROLE_INFO=`aws iam list-roles | jq -r ".Roles[] | select( .RoleName == \"${CLUSTER_ROLE_NAME}\" )"`
+    if [ "$ROLE_INFO" == "" ]; then
+        # The role doesn't exist, so send the creation command
+        aws iam create-role \
+          --role-name "$CLUSTER_ROLE_NAME" \
+          --assume-role-policy-document "file://$CLUSTER_ROLE_POLICY_FILENAME" > /dev/null 2>&1
+        if [ "$?" != "0" ]; then
+            # If the command failed, exit
+            exit $?
+        fi
+    fi
+    ROLE_INFO=`aws iam list-roles | jq -r ".Roles[] | select( .RoleName == \"${CLUSTER_ROLE_NAME}\" )"`
+    local I=0
+    while [ "$ROLE_INFO" == "" ] && [ "$I" != "60" ]; do
+        # Wait for up to an hour for the cluster to be created, polling every minute
+        echo -n "."
+        # Sleep for a minute to 
+        sleep 60
+        I=$(($I + 1))
+        ROLE_INFO=`aws iam list-roles | jq -r ".Roles[] | select( .RoleName == \"${CLUSTER_ROLE_NAME}\" )"`
+    done
+    if [ "$I" != "0" ]; then
+        echo
+    fi
+    if [ "$ROLE_INFO" == "" ]; then
+        exit 1
+    fi
+    echo "------------------------------------------------------------------------"
+    echo $ROLE_INFO | jq .
+    echo "------------------------------------------------------------------------"
+    return 0
+}
+
+
+function ensure_policy_is_attached
+{
+    local CLUSTER_ROLE_NAME=$1
+    local CLUSTER_POLICY_NAME=$2
+
+    echo "------------------------------------------------------------------------"
+    echo "Policy Info"
+    POLICY_INFO=`aws iam list-attached-role-policies --role-name "$CLUSTER_ROLE_NAME" | jq -r ".AttachedPolicies[] | select( .PolicyName == \"${CLUSTER_POLICY_NAME}\")"`
+
+    if [ "$POLICY_INFO" == "" ]; then
+        # The policy isn't attached, so send the attachment command
+        aws iam attach-role-policy \
+          --policy-arn arn:aws:iam::aws:policy/${CLUSTER_POLICY_NAME} \
+          --role-name "${CLUSTER_ROLE_NAME}"
+        if [ "$?" != "0" ]; then
+            # If the command failed, exit
+            exit $?
+        fi
+    fi
+    POLICY_INFO=`aws iam list-attached-role-policies --role-name "$CLUSTER_ROLE_NAME" | jq -r ".AttachedPolicies[] | select( .PolicyName == \"${CLUSTER_POLICY_NAME}\")"`
+    local I=0
+    while [ "$POLICY_INFO" == "" ] && [ "$I" != "60" ]; do
+        # Wait for up to an hour for the policy to be attached, polling every minute
+        echo -n "."
+        # Sleep for a minute to 
+        sleep 60
+        I=$(($I + 1))
+        POLICY_INFO=`aws iam list-attached-role-policies --role-name "$CLUSTER_ROLE_NAME" | jq -r ".AttachedPolicies[] | select( .PolicyName == \"${CLUSTER_POLICY_NAME}\")"`
+    done
+    if [ "$I" != "0" ]; then
+        echo
+    fi
+    if [ "$POLICY_INFO" == "" ]; then
+        exit 1
+    fi
+    echo "------------------------------------------------------------------------"
+    echo $POLICY_INFO | jq .
+    echo "------------------------------------------------------------------------"
+    return 0
+}
+
+
+function ensure_cluster_is_active
+{
+    local CLUSTER_NAME=$1
+    local CLUSTER_ROLE_ARN=$2
+    local STACK_NAME=$3
+    echo "------------------------------------------------------------------------"
+    echo "Cluster Info"
+    CLUSTER_INFO=`aws eks describe-cluster --name $CLUSTER_NAME --no-paginate 2> /dev/null`
+    if [ "$?" != "0" ]; then
+        # The cluster hasn't been fully created
+        local SUBNET_IDS=`aws ec2 describe-subnets | jq -r "[.Subnets[] | select(.Tags and .Tags[].Key == \"aws:cloudformation:stack-name\" and .Tags[].Value == \"${STACK_NAME}\").SubnetId]"`
+        aws eks create-cluster \
+            --name "${CLUSTER_NAME}" \
+            --role-arn "${CLUSTER_ROLE_ARN}" \
+            --resources-vpc-config "subnetIds=$SUBNET_IDS"
+        if [ "$?" != "0" ]; then
+            # If the command failed, exit
+            exit $?
+        fi
+    fi
+    CLUSTER_INFO=`aws eks describe-cluster --name $CLUSTER_NAME --no-paginate | jq -r "select( .cluster.status == \"ACTIVE\" )"`
+    local I=0
+    while [ "$CLUSTER_INFO" == "" ] && [ "$I" != "60" ]; do
+        # Wait for up to an hour for the cluster to be created, polling every minute
+        echo -n "."
+        # Sleep for a minute to 
+        sleep 60
+        I=$(($I + 1))
+        CLUSTER_INFO=`aws eks describe-cluster --name $CLUSTER_NAME --no-paginate | jq -r "select( .cluster.status == \"ACTIVE\" )"`
+    done
+    if [ "$I" != "0" ]; then
+        echo
+    fi
+    CLUSTER_INFO=`aws eks describe-cluster --name $CLUSTER_NAME --no-paginate | jq -r "select( .cluster.status == \"ACTIVE\" )"`
+    if [ "$CLUSTER_INFO" == "" ]; then
+        exit 1
+    fi
+    echo "------------------------------------------------------------------------"
+    echo $CLUSTER_INFO | jq .
+    echo "------------------------------------------------------------------------"
+    return 0
+}
+
+
+function ensure_fargate_profile_added
+{
+    local CLUSTER_NAME=$1
+    local CLUSTER_FARGATE_PROFILE_NAME=$2
+    local FARGATE_ROLE_ARN=$3
+    local FARGATE_NAMESPACE_NAME=$4
+    local FARGATE_NAMESPACE_LABELS=$5
+    if [ "$FARGATE_NAMESPACE_NAME" == "" ]; then
+        FARGATE_NAMESPACE_NAME="default"
+    fi
+    if [ "$FARGATE_NAMESPACE_LABELS" == "" ]; then
+        FARGATE_NAMESPACE_LABELS="{}"
+    fi
+
+    echo "------------------------------------------------------------------------"
+    echo "Fargate Cluster '$FARGATE_NAMESPACE_NAME' Profile Info"
+    local SELECTORS="[{\"namespace\": \"$FARGATE_NAMESPACE_NAME\", \"labels\": $FARGATE_NAMESPACE_LABELS}]"
+    aws eks describe-fargate-profile --cluster-name $CLUSTER_NAME --fargate-profile-name $CLUSTER_FARGATE_PROFILE_NAME > /dev/null 2>&1
+    if [ "$?" != "0" ]; then
+        # The profile isn't created, so send the creation command
+        local SUBNET_IDS=`aws ec2 describe-subnets | jq -r "[.Subnets[] | select(.Tags and .Tags[].Key == \"aws:cloudformation:stack-name\" and .Tags[].Value == \"${STACK_NAME}\" and .MapPublicIpOnLaunch == false).SubnetId]"`
+        aws eks create-fargate-profile \
+          --fargate-profile-name $CLUSTER_FARGATE_PROFILE_NAME \
+          --cluster-name $CLUSTER_NAME \
+          --pod-execution-role-arn $FARGATE_ROLE_ARN \
+          --selectors "$SELECTORS" > /dev/null 2>& 1
+        if [ "$?" != "0" ]; then
+            exit $?
+        fi
+    fi
+    FARGATE_CLUSTER_PROFILE_INFO=`aws eks describe-fargate-profile --cluster-name $CLUSTER_NAME --fargate-profile-name $CLUSTER_FARGATE_PROFILE_NAME 2> /dev/null | jq -r ".fargateProfile | select( .fargateProfileName == \"$CLUSTER_FARGATE_PROFILE_NAME\" and .status == \"ACTIVE\" and .selectors[].namespace == \"$FARGATE_NAMESPACE_NAME\")"`
+    local I=0
+    while [ "$FARGATE_CLUSTER_PROFILE_INFO" == "" ] && [ "$I" != "60" ]; do
+        # Wait for up to an hour for the policy to be attached, polling every minute
+        echo -n "."
+        # Sleep for a minute to 
+        sleep 60
+        I=$(($I + 1))
+        FARGATE_CLUSTER_PROFILE_INFO=`aws eks describe-fargate-profile --cluster-name $CLUSTER_NAME --fargate-profile-name $CLUSTER_FARGATE_PROFILE_NAME 2> /dev/null | jq -r ".fargateProfile | select( .fargateProfileName == \"$CLUSTER_FARGATE_PROFILE_NAME\" and .status == \"ACTIVE\" and .selectors[].namespace == \"$FARGATE_NAMESPACE_NAME\")"`
+    done
+    if [ "$I" != "0" ]; then
+        echo
+    fi
+    if [ "$FARGATE_CLUSTER_PROFILE_INFO" == "" ]; then
+        exit 1
+    fi
+    echo "------------------------------------------------------------------------"
+    echo $FARGATE_CLUSTER_PROFILE_INFO | jq .
+    echo "------------------------------------------------------------------------"
+    return 0
+}
+
+
+function ensure_nodegroup_configured
+{
+    local CLUSTER_NAME=$1
+    local NODEGROUP_NAME=$2
+    local NODEGROUP_ROLE_NAME=$3
+
+    echo "------------------------------------------------------------------------"
+    echo "Nodegroup '$NODEGROUP_NAME' Info"
+    aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $NODEGROUP_NAME > /dev/null 2>&1
+    if [ "$?" != "0" ]; then
+        # The nodegroup isn't created, so send the creation command
+        local SUBNET_IDS=`aws ec2 describe-subnets | jq -r "[.Subnets[] | select(.Tags and .Tags[].Key == \"aws:cloudformation:stack-name\" and .Tags[].Value == \"${STACK_NAME}\").SubnetId]"`
+        aws eks create-nodegroup \
+          --cluster-name $CLUSTER_NAME \
+          --nodegroup-name $NODEGROUP_NAME \
+          --node-role $NODEGROUP_ROLE_NAME \
+          --subnets "$SUBNET_IDS" > /dev/null
+        if [ "$?" != "0" ]; then
+            exit $?
+        fi
+    fi
+    NODEGROUP_INFO=`aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $NODEGROUP_NAME 2> /dev/null | jq -r ".nodegroup | select( .nodegroupName == \"$NODEGROUP_NAME\" and .status == \"ACTIVE\" )"`
+    local I=0
+    while [ "$NODEGROUP_INFO" == "" ] && [ "$I" != "60" ]; do
+        # Wait for up to an hour for the policy to be attached, polling every minute
+        echo -n "."
+        # Sleep for a minute to 
+        sleep 60
+        I=$(($I + 1))
+        NODEGROUP_INFO=`aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $NODEGROUP_NAME 2> /dev/null | jq -r ".nodegroup | select( .nodegroupName == \"$NODEGROUP_NAME\" and .status == \"ACTIVE\" )"`
+    done
+    if [ "$I" != "0" ]; then
+        echo
+    fi
+    if [ "$NODEGROUP_INFO" == "" ]; then
+        exit 1
+    fi
+    echo "------------------------------------------------------------------------"
+    echo $NODEGROUP_INFO | jq .
+    echo "------------------------------------------------------------------------"
+    return 0
+}

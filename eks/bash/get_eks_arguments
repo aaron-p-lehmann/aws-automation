@@ -1,0 +1,119 @@
+#! /bin/bash
+
+########################################################################
+# Parse arguments to create_eks_cluster
+#
+# Usage:
+#   source get_eks_arguments $*
+#
+########################################################################
+
+
+
+# Default values
+STACK_NAME="my-eks-vpc-stack"
+REGION="us-east-2"
+CLUSTER_POLICY_NAME="AmazonEKSClusterPolicy"
+CLUSTER_ROLE_NAME="myAmazonEKSClusterRole"
+CLUSTER_ROLE_POLICY_FILENAME="resources/eks-cluster-role-trust-policy.json"
+CLUSTER_NAME="my-cluster"
+NODE_TYPE="fargate"
+USERNAME=""
+FARGATE_POLICY_NAME="AmazonEKSFargatePodExecutionRolePolicy"
+FARGATE_ROLE_NAME="myAmazonEKSFargatePodExecutionRole"
+FARGATE_POD_EXECUTION_ROLE_TRUST_POLICY_FILENAME="resources/fargate-pod-execution-role-trust-policy.json"
+FARGATE_PROFILE_NAME="my-profile"
+MANAGED_NODE_ROLE_NAME="myAmazonEKSNodeRole"
+MANAGED_NODE_POD_EXECUTION_ROLE_TRUST_POLICY_FILENAME="resources/managed-node-pod-execution-role-trust-policy.json"
+NODEGROUP_NAME="my-nodegroup"
+
+
+# Values for function returns
+STACK_INFO=""
+ROLE_INFO=""
+POLICY_INFO=""
+CLUSTER_INFO=""
+FARGATE_CLUSTER_POLICY_INFO=""
+
+
+function get_args
+{
+    # get arguments
+    while [ "$1" != "" ]; do
+        case "$1" in 
+            "--eks-stack-name")
+            STACK_NAME=$2
+            ;;
+            "--aws-region")
+            REGION=$2
+            ;;
+            "--cluster-role-name")
+            CLUSTER_ROLE_NAME=$2
+            ;;
+            "--cluster-policy-name")
+            CLUSTER_POLICY_NAME=$2
+            ;;
+            "--cluster-role-policy-filename")
+            CLUSTER_ROLE_POLICY_FILENAME=$2
+            ;;
+            "--cluster-name")
+            CLUSTER_NAME=$2
+            ;;
+            "--node-type")
+            NODE_TYPE=$2
+            ;;
+            "--username")
+            USERNAME=$2
+            ;;
+            "--fargate-profile-name")
+            FARGATE_PROFILE_NAME=$2
+            ;;
+            "--fargate-role-name")
+            FARGATE_ROLE_NAME=$2
+            ;;
+            "--fargate-policy-name")
+            FARGATE_POLICY_NAME=$2
+            ;;
+            "--fargate-pod-execution-role-trust-policy-filename")
+            FARGATE_POD_EXECUTION_ROLE_TRUST_POLICY_FILENAME=$2
+            ;;
+            "--managed-node-role-name")
+            MANAGED_NODE_ROLE_NAME=$2
+            ;;
+            "--managed-node-pod-execution-role-trust-policy-filename")
+            MANAGED_NODE_POD_EXECUTION_ROLE_TRUST_POLICY_FILENAME=$2
+            ;;
+            "--nodegroup-name")
+            NODEGROUP_NAME=$2
+            ;;
+        esac
+        shift 2
+    done
+}
+
+
+get_args $*
+FARGATE_EXECUTION_ROLE_TRUST_POLICY="{
+  \"Version\": \"2012-10-17\",
+  \"Statement\": [
+    {
+      \"Effect\": \"Allow\",
+      \"Principal\": {
+        \"Service\": \"eks-fargate-pods.amazonaws.com\"
+      },
+      \"Action\": \"sts:AssumeRole\"
+    }
+  ]
+}"
+EC2_EXECUTION_ROLE_TRUST_POLICY="{
+  \"Version\": \"2012-10-17\",
+  \"Statement\": [
+    {
+      \"Effect\": \"Allow\",
+      \"Principal\": {
+        \"Service\": \"ec2.amazonaws.com\"
+      },
+      \"Action\": \"sts:AssumeRole\"
+    }
+  ]
+}"

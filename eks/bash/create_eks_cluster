@@ -1,0 +1,60 @@
+#! /bin/bash
+
+########################################################################
+# Ensures an EKS cluster is built and configured
+# Based on https://docs.aws.amazon.com/eks/latest/userguide/getting-started-console.html
+#
+# Usage:
+#   create_eks_cluster --username <USERNAME> [--eks-stack-name <STACK_NAME>] [--aws-region <REGION>] [--cluster-role-name <CLUSTER_ROLE_NAME>] [--cluster-policy-name <CLUSTER_POLICY_NAME>] [--cluster-role-policy-filename <CLUSTER_ROLE_POLICY_FILENAME>] [--cluster-name <CLUSTER_NAME>] [--node-type <NODE_TYPE>] [--fargate-role-name <FARGATE_ROLE_NAME>] [--fargate-policy-name <FARGATE_POLICY_NAME>] [--fargate-profile-name <FARGATE_PROFILE_NAME>] [--fargate-pod-execution-role-trust-policy-filename <FARGATE_POD_EXECUTION_ROLE_TRUST_POLICY_FILENAME>] [--managed-node-role-name <MANAGED_NODE_ROLE_NAME>] [--managed-node-pod-execution-role-trust-policy-filename <MANAGED_NODE_POD_EXECUTION_ROLE_TRUST_POLICY_FILENAME>] [--nodegroup-name <NODEGROUP_NAME>]
+########################################################################
+
+
+source ./bash/eks_functions
+
+
+# Step 0: Parse CLI arguments
+source ./bash/get_eks_arguments $*
+
+# Step 1: Create your Amazon EKS cluster - https://docs.aws.amazon.com/eks/latest/userguide/getting-started-console.html#eks-create-cluster
+ensure_stack_exists "$REGION" "$STACK_NAME"
+ensure_role_is_configured "$CLUSTER_ROLE_NAME" "$CLUSTER_ROLE_POLICY_FILENAME"
+CLUSTER_ROLE_INFO="$ROLE_INFO"
+ensure_policy_is_attached "$CLUSTER_ROLE_NAME" "$CLUSTER_POLICY_NAME"
+CLUSTER_POLICY_INFO="$POLICY_INFO"
+ensure_cluster_is_active "$CLUSTER_NAME" `echo $CLUSTER_ROLE_INFO | jq -r ".Arn"` "$STACK_NAME"
+
+# Step 2: Configure your computer to communicate with your cluster - https://docs.aws.amazon.com/eks/latest/userguide/getting-started-console.html#eks-configure-kubectl
+echo "------------------------------------------------------------------------"
+echo "Configuring kubeconfig to have $CLUSTER_NAME in $REGION"
+echo "------------------------------------------------------------------------"
+aws eks update-kubeconfig --region "$REGION" --name "$CLUSTER_NAME"
+kubectl get svc | grep "kubernetes"
+if [ "$?" != "0" ]; then
+    exit $?
+fi
+
+# Step 3: Create nodes - https://docs.aws.amazon.com/eks/latest/userguide/getting-started-console.html#eks-launch-workers
+if [ "$NODE_TYPE" == "fargate" ]; then
+    # Make Fargate nodes
+    echo $FARGATE_EXECUTION_ROLE_TRUST_POLICY > $FARGATE_POD_EXECUTION_ROLE_TRUST_POLICY_FILENAME
+    ensure_role_is_configured "$FARGATE_ROLE_NAME" "$FARGATE_POD_EXECUTION_ROLE_TRUST_POLICY_FILENAME"
+    FARGATE_ROLE_INFO="$ROLE_INFO"
+    ensure_policy_is_attached "$FARGATE_ROLE_NAME" "$FARGATE_POLICY_NAME"
+    FARGATE_POLICY_INFO="$POLICY_INFO"
+    ensure_fargate_profile_added "$CLUSTER_NAME" "$FARGATE_PROFILE_NAME" `echo $FARGATE_ROLE_INFO | jq -r ".Arn"`
+    ensure_fargate_profile_added "$CLUSTER_NAME" "CoreDNS" `echo $FARGATE_ROLE_INFO | jq -r ".Arn"` "kube-system" '{"k8s-app": "kube-dns"}'
+elif [ "$NODE_TYPE" == "managed" ]; then
+    # Make Managed nodes
+    echo "Making managed nodes"
+    echo $EC2_EXECUTION_ROLE_TRUST_POLICY > $MANAGED_NODE_POD_EXECUTION_ROLE_TRUST_POLICY_FILENAME
+    ensure_role_is_configured "$MANAGED_NODE_ROLE_NAME" "$MANAGED_NODE_POD_EXECUTION_ROLE_TRUST_POLICY_FILENAME"
+    MANAGED_NODE_ROLE_INFO="$ROLE_INFO"
+    ensure_policy_is_attached "$MANAGED_NODE_ROLE_NAME" "AmazonEKSWorkerNodePolicy"
+    ensure_policy_is_attached "$MANAGED_NODE_ROLE_NAME" "AmazonEC2ContainerRegistryReadOnly"
+    ensure_policy_is_attached "$MANAGED_NODE_ROLE_NAME" "AmazonEKS_CNI_Policy"
+    ensure_nodegroup_configured "$CLUSTER_NAME" "$NODEGROUP_NAME" "$MANAGED_NODE_ROLE_NAME"
+else
+    # Make regular nodes
+    echo "No nodes"
+    echo $EXECUTION_ROLE_TRUST_POLICY > $MANAGED_NODE_POD_EXECUTION_ROLE_TRUST_POLICY_FILENAME
+fi
