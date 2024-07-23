@@ -9,7 +9,6 @@
 
 # get arguments
 while [ "$1" != "" ]; do
-    echo "$1 $2"
     case "$1" in 
         "--account")
         ACCOUNT=$2
